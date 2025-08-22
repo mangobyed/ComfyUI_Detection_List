@@ -8,8 +8,9 @@ from ultralytics import YOLO
 
 class YOLOv8ObjectDetectionNode:
     """
-    ComfyUI Node for YOLOv8 Object Detection
-    Takes an image input and outputs multiple images for each detected object
+    ComfyUI Node for YOLOv8 Object Extraction
+    Extracts inanimate objects from images, excluding people and animals
+    Outputs multiple cropped images for each detected object
     """
     
     def __init__(self):
@@ -51,6 +52,8 @@ class YOLOv8ObjectDetectionNode:
                     "step": 64
                 }),
                 "preserve_aspect_ratio": ("BOOLEAN", {"default": True}),
+                "exclude_person": ("BOOLEAN", {"default": True}),
+                "objects_only": ("BOOLEAN", {"default": True}),
             }
         }
     
@@ -58,7 +61,7 @@ class YOLOv8ObjectDetectionNode:
     RETURN_NAMES = ("detected_objects", "object_count", "class_names", "detection_info")
     
     FUNCTION = "detect_objects"
-    CATEGORY = "image/object_detection"
+    CATEGORY = "image/object_extraction"
     
     def load_model(self, model_name, custom_model_path=""):
         """Load YOLOv8 model"""
@@ -160,11 +163,41 @@ class YOLOv8ObjectDetectionNode:
         cropped = pil_image.crop((x1, y1, x2, y2))
         return cropped
     
-    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512, preserve_aspect_ratio=True):
+    def get_excluded_classes(self, exclude_person=True, objects_only=True):
+        """Get list of class IDs to exclude from detection"""
+        excluded_classes = set()
+        
+        # COCO dataset class IDs to exclude
+        if exclude_person:
+            excluded_classes.add(0)  # person
+        
+        if objects_only:
+            # Exclude living beings and focus on inanimate objects
+            living_beings = {
+                0,   # person
+                14,  # bird
+                15,  # cat
+                16,  # dog
+                17,  # horse
+                18,  # sheep
+                19,  # cow
+                20,  # elephant
+                21,  # bear
+                22,  # zebra
+                23,  # giraffe
+            }
+            excluded_classes.update(living_beings)
+        
+        return excluded_classes
+    
+    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512, preserve_aspect_ratio=True, exclude_person=True, objects_only=True):
         """Main detection function"""
         try:
             # Load model
             self.load_model(model_name, custom_model_path)
+            
+            # Get classes to exclude
+            excluded_classes = self.get_excluded_classes(exclude_person, objects_only)
             
             # Convert tensor to PIL
             pil_image = self.tensor_to_pil(image)
@@ -180,6 +213,7 @@ class YOLOv8ObjectDetectionNode:
             boxes = detections.boxes
             
             print(f"YOLOv8 Detection: Model inference complete")
+            print(f"YOLOv8 Detection: Excluding classes: {sorted(excluded_classes)} {'(objects only mode)' if objects_only else '(custom exclusions)'}")
             
             if boxes is None or len(boxes) == 0:
                 # No objects detected, return original image
@@ -192,7 +226,8 @@ class YOLOv8ObjectDetectionNode:
             detection_info_list = []
             cropped_objects = []
             
-            # First pass: crop all objects
+            # First pass: crop all objects (excluding filtered classes)
+            object_count = 0
             for i, box in enumerate(boxes):
                 # Get bounding box coordinates
                 bbox = box.xyxy[0].cpu().numpy()  # x1, y1, x2, y2
@@ -200,13 +235,20 @@ class YOLOv8ObjectDetectionNode:
                 class_id = int(box.cls[0].cpu().numpy())
                 class_name = self.model.names[class_id]
                 
+                # Skip excluded classes
+                if class_id in excluded_classes:
+                    print(f"Skipping {class_name} (excluded class)")
+                    continue
+                
+                object_count += 1
+                
                 # Crop object from image
                 cropped_object = self.crop_object(pil_image, bbox, padding)
                 cropped_objects.append(cropped_object)
                 
                 # Store class name and info
                 class_names.append(class_name)
-                detection_info_list.append(f"Object {i+1}: {class_name} (conf: {confidence:.3f})")
+                detection_info_list.append(f"Object {object_count}: {class_name} (conf: {confidence:.3f})")
             
             # Determine target size for standardization
             if cropped_objects:
@@ -252,11 +294,13 @@ class YOLOv8ObjectDetectionNode:
                 class_names_str = ", ".join(class_names)
                 detection_info_str = "; ".join(detection_info_list)
                 object_count = len(detected_images)
+                print(f"YOLOv8 Detection: Final output - {object_count} objects after filtering: [{class_names_str}]")
             else:
                 batch_tensor = image
                 class_names_str = ""
-                detection_info_str = "No objects detected"
+                detection_info_str = "No objects detected after filtering" if len(boxes) > 0 else "No objects detected"
                 object_count = 0
+                print(f"YOLOv8 Detection: No valid objects after filtering (detected {len(boxes)} total)")
             
             return (batch_tensor, object_count, class_names_str, detection_info_str)
             
