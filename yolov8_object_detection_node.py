@@ -41,6 +41,12 @@ class YOLOv8ObjectDetectionNode:
                     "max": 100, 
                     "step": 1
                 }),
+                "max_size": ("INT", {
+                    "default": 512, 
+                    "min": 128, 
+                    "max": 1024, 
+                    "step": 64
+                }),
             },
             "optional": {
                 "custom_model_path": ("STRING", {"default": ""}),
@@ -91,8 +97,12 @@ class YOLOv8ObjectDetectionNode:
         # Convert to PIL
         return Image.fromarray(np_image)
     
-    def pil_to_tensor(self, pil_image):
+    def pil_to_tensor(self, pil_image, target_size=None):
         """Convert PIL Image to ComfyUI tensor format"""
+        # Resize if target size is provided
+        if target_size is not None:
+            pil_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
+        
         # Convert PIL to numpy
         np_image = np.array(pil_image)
         
@@ -119,7 +129,7 @@ class YOLOv8ObjectDetectionNode:
         cropped = pil_image.crop((x1, y1, x2, y2))
         return cropped
     
-    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path=""):
+    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, max_size, custom_model_path=""):
         """Main detection function"""
         try:
             # Load model
@@ -138,15 +148,20 @@ class YOLOv8ObjectDetectionNode:
             detections = results[0]
             boxes = detections.boxes
             
+            print(f"YOLOv8 Detection: Model inference complete")
+            
             if boxes is None or len(boxes) == 0:
                 # No objects detected, return original image
+                print(f"YOLOv8 Detection: No objects detected with confidence > {confidence_threshold}")
                 return (image, 0, "", "No objects detected")
             
             # Process detections
             detected_images = []
             class_names = []
             detection_info_list = []
+            cropped_objects = []
             
+            # First pass: crop all objects
             for i, box in enumerate(boxes):
                 # Get bounding box coordinates
                 bbox = box.xyxy[0].cpu().numpy()  # x1, y1, x2, y2
@@ -156,17 +171,29 @@ class YOLOv8ObjectDetectionNode:
                 
                 # Crop object from image
                 cropped_object = self.crop_object(pil_image, bbox, padding)
-                
-                # Convert back to tensor
-                object_tensor = self.pil_to_tensor(cropped_object)
-                detected_images.append(object_tensor)
+                cropped_objects.append(cropped_object)
                 
                 # Store class name and info
                 class_names.append(class_name)
                 detection_info_list.append(f"Object {i+1}: {class_name} (conf: {confidence:.3f})")
             
-            # Concatenate all detected objects into a batch
-            if detected_images:
+            # Determine target size for standardization
+            if cropped_objects:
+                # Find the maximum dimensions among all cropped objects
+                max_width = max(obj.size[0] for obj in cropped_objects)
+                max_height = max(obj.size[1] for obj in cropped_objects)
+                
+                # Use a reasonable maximum size to avoid memory issues
+                target_size = (min(max_width, max_size), min(max_height, max_size))
+                
+                print(f"YOLOv8 Detection: Found {len(cropped_objects)} objects, resizing to {target_size}")
+                
+                # Second pass: resize all objects to the same size and convert to tensors
+                for cropped_object in cropped_objects:
+                    object_tensor = self.pil_to_tensor(cropped_object, target_size)
+                    detected_images.append(object_tensor)
+                
+                # Concatenate all detected objects into a batch
                 batch_tensor = torch.cat(detected_images, dim=0)
                 class_names_str = ", ".join(class_names)
                 detection_info_str = "; ".join(detection_info_list)
