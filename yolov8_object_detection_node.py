@@ -8,8 +8,9 @@ from ultralytics import YOLO
 
 class YOLOv8ObjectDetectionNode:
     """
-    ComfyUI Node for YOLOv8 Object Extraction
-    Extracts inanimate objects from images, excluding people and animals
+    ComfyUI Node for YOLOv8 Object Detection and Extraction
+    Detects and extracts objects from all 80 COCO classes with flexible filtering
+    Can optionally exclude people, animals, or vehicles
     Outputs multiple cropped images for each detected object
     """
     
@@ -53,7 +54,14 @@ class YOLOv8ObjectDetectionNode:
                 }),
                 "preserve_aspect_ratio": ("BOOLEAN", {"default": True}),
                 "exclude_person": ("BOOLEAN", {"default": True}),
-                "objects_only": ("BOOLEAN", {"default": True}),
+                "exclude_animals": ("BOOLEAN", {"default": False}),
+                "exclude_vehicles": ("BOOLEAN", {"default": False}),
+                "min_confidence": ("FLOAT", {
+                    "default": 0.3, 
+                    "min": 0.1, 
+                    "max": 0.9, 
+                    "step": 0.05
+                }),
             }
         }
     
@@ -61,7 +69,7 @@ class YOLOv8ObjectDetectionNode:
     RETURN_NAMES = ("detected_objects", "object_count", "class_names", "detection_info")
     
     FUNCTION = "detect_objects"
-    CATEGORY = "image/object_extraction"
+    CATEGORY = "image/object_detection"
     
     def load_model(self, model_name, custom_model_path=""):
         """Load YOLOv8 model"""
@@ -163,7 +171,7 @@ class YOLOv8ObjectDetectionNode:
         cropped = pil_image.crop((x1, y1, x2, y2))
         return cropped
     
-    def get_excluded_classes(self, exclude_person=True, objects_only=True):
+    def get_excluded_classes(self, exclude_person=True, exclude_animals=False, exclude_vehicles=False):
         """Get list of class IDs to exclude from detection"""
         excluded_classes = set()
         
@@ -171,10 +179,9 @@ class YOLOv8ObjectDetectionNode:
         if exclude_person:
             excluded_classes.add(0)  # person
         
-        if objects_only:
-            # Exclude living beings and focus on inanimate objects
-            living_beings = {
-                0,   # person
+        if exclude_animals:
+            # Wild and domestic animals
+            animals = {
                 14,  # bird
                 15,  # cat
                 16,  # dog
@@ -186,25 +193,64 @@ class YOLOv8ObjectDetectionNode:
                 22,  # zebra
                 23,  # giraffe
             }
-            excluded_classes.update(living_beings)
+            excluded_classes.update(animals)
+        
+        if exclude_vehicles:
+            # Transportation vehicles
+            vehicles = {
+                1,   # bicycle
+                2,   # car
+                3,   # motorcycle
+                4,   # airplane
+                5,   # bus
+                6,   # train
+                7,   # truck
+                8,   # boat
+            }
+            excluded_classes.update(vehicles)
         
         return excluded_classes
     
-    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512, preserve_aspect_ratio=True, exclude_person=True, objects_only=True):
+    def get_all_coco_classes(self):
+        """Return all 80 COCO class names for reference"""
+        return {
+            0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus',
+            6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 10: 'fire hydrant',
+            11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat',
+            16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 20: 'elephant', 21: 'bear',
+            22: 'zebra', 23: 'giraffe', 24: 'backpack', 25: 'umbrella', 26: 'handbag',
+            27: 'tie', 28: 'suitcase', 29: 'frisbee', 30: 'skis', 31: 'snowboard',
+            32: 'sports ball', 33: 'kite', 34: 'baseball bat', 35: 'baseball glove',
+            36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle',
+            40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon',
+            45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange',
+            50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut',
+            55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed',
+            60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse',
+            65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave',
+            69: 'oven', 70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book',
+            74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier',
+            79: 'toothbrush'
+        }
+    
+    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512, preserve_aspect_ratio=True, exclude_person=True, exclude_animals=False, exclude_vehicles=False, min_confidence=0.3):
         """Main detection function"""
         try:
             # Load model
             self.load_model(model_name, custom_model_path)
             
             # Get classes to exclude
-            excluded_classes = self.get_excluded_classes(exclude_person, objects_only)
+            excluded_classes = self.get_excluded_classes(exclude_person, exclude_animals, exclude_vehicles)
+            
+            # Use higher confidence threshold for better quality detections
+            effective_confidence = max(confidence_threshold, min_confidence)
             
             # Convert tensor to PIL
             pil_image = self.tensor_to_pil(image)
             
             # Run inference
             results = self.model(pil_image, 
-                               conf=confidence_threshold, 
+                               conf=effective_confidence, 
                                iou=iou_threshold,
                                device=self.device)
             
@@ -213,11 +259,17 @@ class YOLOv8ObjectDetectionNode:
             boxes = detections.boxes
             
             print(f"YOLOv8 Detection: Model inference complete")
-            print(f"YOLOv8 Detection: Excluding classes: {sorted(excluded_classes)} {'(objects only mode)' if objects_only else '(custom exclusions)'}")
+            total_classes = 80
+            excluded_count = len(excluded_classes)
+            included_count = total_classes - excluded_count
+            
+            excluded_names = [self.get_all_coco_classes()[cls_id] for cls_id in sorted(excluded_classes)]
+            print(f"YOLOv8 Detection: Including {included_count}/80 classes, excluding {excluded_count}: {excluded_names}")
+            print(f"YOLOv8 Detection: Using confidence threshold: {effective_confidence}")
             
             if boxes is None or len(boxes) == 0:
                 # No objects detected, return original image
-                print(f"YOLOv8 Detection: No objects detected with confidence > {confidence_threshold}")
+                print(f"YOLOv8 Detection: No objects detected with confidence > {effective_confidence}")
                 return (image, 0, "", "No objects detected")
             
             # Process detections
