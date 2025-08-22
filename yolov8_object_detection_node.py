@@ -41,15 +41,15 @@ class YOLOv8ObjectDetectionNode:
                     "max": 100, 
                     "step": 1
                 }),
+            },
+            "optional": {
+                "custom_model_path": ("STRING", {"default": ""}),
                 "max_size": ("INT", {
                     "default": 512, 
                     "min": 128, 
                     "max": 1024, 
                     "step": 64
                 }),
-            },
-            "optional": {
-                "custom_model_path": ("STRING", {"default": ""}),
             }
         }
     
@@ -129,7 +129,7 @@ class YOLOv8ObjectDetectionNode:
         cropped = pil_image.crop((x1, y1, x2, y2))
         return cropped
     
-    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, max_size, custom_model_path=""):
+    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512):
         """Main detection function"""
         try:
             # Load model
