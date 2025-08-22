@@ -189,12 +189,34 @@ class YOLOv8ObjectDetectionNode:
                 print(f"YOLOv8 Detection: Found {len(cropped_objects)} objects, resizing to {target_size}")
                 
                 # Second pass: resize all objects to the same size and convert to tensors
-                for cropped_object in cropped_objects:
+                for i, cropped_object in enumerate(cropped_objects):
                     object_tensor = self.pil_to_tensor(cropped_object, target_size)
+                    print(f"Object {i+1} tensor shape: {object_tensor.shape}")
                     detected_images.append(object_tensor)
                 
+                # Verify all tensors have the same shape before concatenating
+                if len(detected_images) > 1:
+                    first_shape = detected_images[0].shape
+                    for i, tensor in enumerate(detected_images):
+                        if tensor.shape != first_shape:
+                            print(f"WARNING: Tensor {i} shape mismatch: {tensor.shape} vs expected {first_shape}")
+                            # Force resize the tensor to match
+                            detected_images[i] = torch.nn.functional.interpolate(
+                                tensor.permute(0, 3, 1, 2), 
+                                size=(first_shape[1], first_shape[2]), 
+                                mode='bilinear', 
+                                align_corners=False
+                            ).permute(0, 2, 3, 1)
+                
                 # Concatenate all detected objects into a batch
-                batch_tensor = torch.cat(detected_images, dim=0)
+                try:
+                    batch_tensor = torch.cat(detected_images, dim=0)
+                    print(f"Successfully created batch tensor with shape: {batch_tensor.shape}")
+                except Exception as cat_error:
+                    print(f"Error concatenating tensors: {cat_error}")
+                    # Fallback: return first detected object only
+                    batch_tensor = detected_images[0]
+                    print(f"Fallback: returning single object with shape: {batch_tensor.shape}")
                 class_names_str = ", ".join(class_names)
                 detection_info_str = "; ".join(detection_info_list)
                 object_count = len(detected_images)
