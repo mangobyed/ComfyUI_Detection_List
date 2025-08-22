@@ -50,6 +50,7 @@ class YOLOv8ObjectDetectionNode:
                     "max": 1024, 
                     "step": 64
                 }),
+                "preserve_aspect_ratio": ("BOOLEAN", {"default": True}),
             }
         }
     
@@ -97,11 +98,14 @@ class YOLOv8ObjectDetectionNode:
         # Convert to PIL
         return Image.fromarray(np_image)
     
-    def pil_to_tensor(self, pil_image, target_size=None):
+    def pil_to_tensor(self, pil_image, target_size=None, preserve_aspect_ratio=True):
         """Convert PIL Image to ComfyUI tensor format"""
         # Resize if target size is provided
         if target_size is not None:
-            pil_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
+            if preserve_aspect_ratio:
+                pil_image = self.resize_with_padding(pil_image, target_size)
+            else:
+                pil_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
         
         # Convert PIL to numpy
         np_image = np.array(pil_image)
@@ -113,6 +117,33 @@ class YOLOv8ObjectDetectionNode:
         tensor = tensor.unsqueeze(0)
         
         return tensor
+    
+    def resize_with_padding(self, pil_image, target_size):
+        """Resize image while maintaining aspect ratio using padding"""
+        target_width, target_height = target_size
+        original_width, original_height = pil_image.size
+        
+        # Calculate scaling factor to maintain aspect ratio
+        scale = min(target_width / original_width, target_height / original_height)
+        
+        # Calculate new dimensions
+        new_width = int(original_width * scale)
+        new_height = int(original_height * scale)
+        
+        # Resize the image maintaining aspect ratio
+        resized_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Create a new image with target size and black background
+        padded_image = Image.new('RGB', target_size, (0, 0, 0))
+        
+        # Calculate position to center the resized image
+        paste_x = (target_width - new_width) // 2
+        paste_y = (target_height - new_height) // 2
+        
+        # Paste the resized image onto the padded background
+        padded_image.paste(resized_image, (paste_x, paste_y))
+        
+        return padded_image
     
     def crop_object(self, pil_image, bbox, padding=10):
         """Crop object from image with optional padding"""
@@ -129,7 +160,7 @@ class YOLOv8ObjectDetectionNode:
         cropped = pil_image.crop((x1, y1, x2, y2))
         return cropped
     
-    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512):
+    def detect_objects(self, image, model_name, confidence_threshold, iou_threshold, padding, custom_model_path="", max_size=512, preserve_aspect_ratio=True):
         """Main detection function"""
         try:
             # Load model
@@ -186,11 +217,12 @@ class YOLOv8ObjectDetectionNode:
                 # Use a reasonable maximum size to avoid memory issues
                 target_size = (min(max_width, max_size), min(max_height, max_size))
                 
-                print(f"YOLOv8 Detection: Found {len(cropped_objects)} objects, resizing to {target_size}")
+                resize_method = "with aspect ratio preservation (padding)" if preserve_aspect_ratio else "by stretching"
+                print(f"YOLOv8 Detection: Found {len(cropped_objects)} objects, standardizing to {target_size} {resize_method}")
                 
                 # Second pass: resize all objects to the same size and convert to tensors
                 for i, cropped_object in enumerate(cropped_objects):
-                    object_tensor = self.pil_to_tensor(cropped_object, target_size)
+                    object_tensor = self.pil_to_tensor(cropped_object, target_size, preserve_aspect_ratio)
                     print(f"Object {i+1} tensor shape: {object_tensor.shape}")
                     detected_images.append(object_tensor)
                 
